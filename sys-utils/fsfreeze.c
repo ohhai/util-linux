@@ -26,6 +26,8 @@
 #include "nls.h"
 #include "closestream.h"
 #include "optutils.h"
+#include "timer.h"
+#include "strutils.h"
 
 static int freeze_f(int fd)
 {
@@ -37,14 +39,23 @@ static int unfreeze_f(int fd)
 	return ioctl(fd, FITHAW, 0);
 }
 
+
+static sig_atomic_t timeout_expired = 0;
+
+static void timeout_handler(int sig __attribute__((__unused__)))
+{
+	timeout_expired = 1;
+}
+
 static void __attribute__((__noreturn__)) usage(FILE *out)
 {
 	fprintf(out, USAGE_HEADER);
 	fprintf(out,
 	      _(" %s [options] <mountpoint>\n"), program_invocation_short_name);
 	fputs(USAGE_OPTIONS, out);
-	fputs(_(" -f, --freeze      freeze the filesystem\n"), out);
-	fputs(_(" -u, --unfreeze    unfreeze the filesystem\n"), out);
+	fputs(_(" -f, --freeze                freeze the filesystem\n"), out);
+	fputs(_(" -U, --auto-unfreeze <secs>  automatically unfreeze after timeout\n"), out);
+	fputs(_(" -u, --unfreeze              unfreeze the filesystem\n"), out);
 	fprintf(out, USAGE_SEPARATOR);
 	fprintf(out, USAGE_HELP);
 	fprintf(out, USAGE_VERSION);
@@ -55,6 +66,8 @@ static void __attribute__((__noreturn__)) usage(FILE *out)
 
 int main(int argc, char **argv)
 {
+	struct itimerval timer;
+	int auto_unfreeze = 0;
 	int fd = -1, c;
 	int freeze = -1, rc = EXIT_FAILURE;
 	char *path;
@@ -63,12 +76,14 @@ int main(int argc, char **argv)
 	static const struct option longopts[] = {
 	    { "help",      0, 0, 'h' },
 	    { "freeze",    0, 0, 'f' },
+	    { "auto-unfreeze", 1, 0, 'U' },
 	    { "unfreeze",  0, 0, 'u' },
 	    { "version",   0, 0, 'V' },
 	    { NULL,        0, 0, 0 }
 	};
 
 	static const ul_excl_t excl[] = {       /* rows and cols in in ASCII order */
+		{ 'U','u' },                    /* auto-unfreeze, unfreeze */
 		{ 'f','u' },			/* freeze, unfreeze */
 		{ 0 }
 	};
@@ -79,7 +94,9 @@ int main(int argc, char **argv)
 	textdomain(PACKAGE);
 	atexit(close_stdout);
 
-	while ((c = getopt_long(argc, argv, "hfuV", longopts, NULL)) != -1) {
+	memset(&timer, 0, sizeof timer);
+
+	while ((c = getopt_long(argc, argv, "hfU:uV", longopts, NULL)) != -1) {
 
 		err_exclusive_options(c, longopts, excl, excl_st);
 
@@ -89,6 +106,13 @@ int main(int argc, char **argv)
 			break;
 		case 'f':
 			freeze = TRUE;
+			break;
+		case 'U':
+			auto_unfreeze = 1;
+			strtotimeval_or_err(optarg, &timer.it_value,
+				_("invalid timeout value"));
+			if (timer.it_value.tv_sec + timer.it_value.tv_usec == 0)
+				errx(EXIT_FAILURE, _("timeout cannot be zero"));
 			break;
 		case 'u':
 			freeze = FALSE;
@@ -132,7 +156,21 @@ int main(int argc, char **argv)
 			warn(_("%s: freeze failed"), path);
 			goto done;
 		}
-	} else {
+	}
+
+	if (auto_unfreeze) {
+		struct sigaction old_sa;
+		struct itimerval old_timer;
+
+		if (setup_timer(&timer, &old_timer, &old_sa, timeout_handler))
+			warnx(_("failed to setup timeout, unfreeze %s"), path);
+		else
+			pause();
+		cancel_timer(&old_timer, &old_sa);
+		freeze = 0;
+	}
+
+	if (!freeze) {
 		if (unfreeze_f(fd)) {
 			warn(_("%s: unfreeze failed"), path);
 			goto done;

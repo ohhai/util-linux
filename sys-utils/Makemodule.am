@@ -52,6 +52,7 @@ ctrlaltdel_SOURCES = sys-utils/ctrlaltdel.c
 sbin_PROGRAMS += fsfreeze
 dist_man_MANS += sys-utils/fsfreeze.8
 fsfreeze_SOURCES = sys-utils/fsfreeze.c
+fsfreeze_LDADD = $(LDADD) libcommon.la
 
 sbin_PROGRAMS += fstrim
 dist_man_MANS += sys-utils/fstrim.8
